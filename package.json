@@ -1,0 +1,22 @@
+{
+  "name": "remote-kiro-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/common",
+    "packages/backend",
+    "packages/agent",
+    "packages/portal"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "clean": "npm run clean --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1019.0",
+    "@aws-sdk/client-secrets-manager": "^3.1019.0",
+    "typescript": "^5.5.0"
+  }
+}

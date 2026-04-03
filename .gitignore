@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.aws-sam/
+*.tsbuildinfo
+sam-output.json
+agent-config.json
+agent-config-local.json
+agent-deploy.zip
+.agent-stage/
+packaged.yaml
+packages/portal/.env
+packages/backend/.env

@@ -1,0 +1,26 @@
+{
+  "name": "@remote-kiro/agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build && node fix-esm-imports.cjs",
+    "clean": "rm -rf dist",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/client-s3": "^3.1010.0",
+    "@aws-sdk/client-sqs": "^3.1010.0",
+    "@aws-sdk/credential-provider-node": "^3.972.21",
+    "@aws-sdk/signature-v4": "^3.370.0",
+    "@remote-kiro/common": "*",
+    "@smithy/protocol-http": "^5.3.12",
+    "@smithy/signature-v4": "^5.3.12"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.0"
+  }
+}

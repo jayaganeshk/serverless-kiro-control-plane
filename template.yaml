@@ -1,0 +1,1171 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: |
+  Remote Kiro Coding Assistant - serverless control-plane for dispatching coding tasks to local agents via SQS, managing jobs, and hosting the portal SPA.
+
+# ------------------------------------------------------------------------------
+# Parameters
+# ------------------------------------------------------------------------------
+Parameters:
+  StageName:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment stage name
+
+  GitHubWebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: Secret used to validate GitHub webhook signatures (HMAC-SHA256)
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch log retention in days
+
+  FeatureJobTimeoutMinutes:
+    Type: Number
+    Default: 30
+    Description: Maximum duration for feature jobs (minutes)
+
+  ReviewJobTimeoutMinutes:
+    Type: Number
+    Default: 15
+    Description: Maximum duration for review jobs (minutes)
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        STAGE: !Ref StageName
+        TABLE_NAME: !Ref SingleTable
+        ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+        BUNDLES_BUCKET: !Ref ArtifactsBucket
+        JOB_QUEUE_URL: !Ref JobQueue
+        COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+
+# ------------------------------------------------------------------------------
+# Resources
+# ------------------------------------------------------------------------------
+Resources:
+
+  # ============================================================================
+  # DynamoDB Tables
+  # ============================================================================
+
+  SingleTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${StageName}-RemoteKiro
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # ============================================================================
+  # SQS Queues
+  # ============================================================================
+
+  JobDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${StageName}-remote-kiro-job-dlq
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  JobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${StageName}-remote-kiro-job-queue
+      VisibilityTimeout: 300 # 5 minutes
+      MessageRetentionPeriod: 86400 # 1 day
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobDLQ.Arn
+        maxReceiveCount: 3
+
+  # ============================================================================
+  # S3 Buckets
+  # ============================================================================
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${StageName}-remote-kiro-artifacts-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionArtifactsToGlacier
+            Prefix: artifacts/
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SPABucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${StageName}-remote-kiro-portal-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SPABucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SPABucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${SPABucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  # ============================================================================
+  # CloudFront Distribution for SPA
+  # ============================================================================
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${StageName}-remote-kiro-portal-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: SPAOrigin
+            DomainName: !GetAtt SPABucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: SPAOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+          Compress: true
+        # SPA routing: return index.html for 403/404 so Vue Router handles routes
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+
+  # ============================================================================
+  # Cognito User Pool
+  # ============================================================================
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${StageName}-remote-kiro-users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${StageName}-remote-kiro-portal-client
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !Sub https://${CloudFrontDistribution.DomainName}/callback
+        - http://localhost:5173/callback
+      LogoutURLs:
+        - !Sub https://${CloudFrontDistribution.DomainName}
+        - http://localhost:5173
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub ${StageName}-remote-kiro-${AWS::AccountId}
+      UserPoolId: !Ref CognitoUserPool
+
+  # ============================================================================
+  # API Gateway (HttpApi)
+  # ============================================================================
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      CorsConfiguration:
+        AllowOrigins:
+          - !Sub https://${CloudFrontDistribution.DomainName}
+          - http://localhost:5173
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        MaxAge: 3600
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}
+              audience:
+                - !Ref CognitoUserPoolClient
+
+  # ============================================================================
+  # Lambda Functions - Portal Routes (Cognito JWT auth)
+  # ============================================================================
+
+  RepositoryFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/repository.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-repository
+      Handler: packages/backend/src/handlers/repository.handler
+      CodeUri: .
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:CreateSecret
+                - secretsmanager:UpdateSecret
+                - secretsmanager:DeleteSecret
+                - secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:remote-kiro/${StageName}/*
+      Events:
+        PostRepositories:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories
+            Method: POST
+        GetRepositories:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories
+            Method: GET
+        GetRepository:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories/{repoId}
+            Method: GET
+        PatchRepository:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories/{repoId}
+            Method: PATCH
+        GetCredential:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories/{repoId}/credential
+            Method: GET
+        PutCredential:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories/{repoId}/credential
+            Method: PUT
+        DeleteCredential:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /repositories/{repoId}/credential
+            Method: DELETE
+
+  ProfileFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/profile.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-profile
+      Handler: packages/backend/src/handlers/profile.handler
+      CodeUri: .
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - S3CrudPolicy:
+            BucketName: !Ref ArtifactsBucket
+      Events:
+        PostProfiles:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /profiles
+            Method: POST
+        GetProfiles:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /profiles
+            Method: GET
+        PublishBundle:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /profiles/{profileId}/publish-bundle
+            Method: POST
+        GetProfile:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /profiles/{profileId}
+            Method: GET
+        UpdateProfile:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /profiles/{profileId}
+            Method: PATCH
+
+  JobFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/job.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-job
+      Handler: packages/backend/src/handlers/job.handler
+      CodeUri: .
+      Timeout: 60
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt JobQueue.QueueName
+        - S3ReadPolicy:
+            BucketName: !Ref ArtifactsBucket
+      Events:
+        PostJobs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs
+            Method: POST
+        GetJobs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs
+            Method: GET
+        GetJob:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}
+            Method: GET
+        GetJobEvents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/events
+            Method: GET
+        GetJobArtifacts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/artifacts
+            Method: GET
+        CancelJob:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/cancel
+            Method: POST
+        GetSpec:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec
+            Method: GET
+        ApproveSpecPhase:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec/approve
+            Method: POST
+        RejectSpecPhase:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec/reject
+            Method: POST
+        UpdateSpecItems:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec/items
+            Method: PATCH
+        PostPhaseMessages:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec/messages
+            Method: POST
+        GetPhaseMessages:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec/messages
+            Method: GET
+        TriggerReview:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/review
+            Method: POST
+        TriggerReviewFix:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/review/fix
+            Method: POST
+
+  # ============================================================================
+  # Lambda Functions - AI Agents (Kiro Agent Config management + Bedrock generation)
+  # ============================================================================
+
+  AIAgentFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/ai-agent.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-ai-agent
+      Handler: packages/backend/src/handlers/ai-agent.handler
+      CodeUri: .
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: amazon.nova-lite-v1:0
+          BEDROCK_REGION: us-east-1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+      Events:
+        GetAIAgents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents
+            Method: GET
+        PostAIAgents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents
+            Method: POST
+        GenerateAIAgent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/generate
+            Method: POST
+        RefineAIAgentPrompt:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/refine-prompt
+            Method: POST
+        GetMcpRegistry:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/mcp-registry
+            Method: GET
+        SuggestMcp:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/suggest-mcp
+            Method: POST
+        GetAIAgent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/{aiAgentId}
+            Method: GET
+        PatchAIAgent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/{aiAgentId}
+            Method: PATCH
+        DeleteAIAgent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /ai-agents/{aiAgentId}
+            Method: DELETE
+
+  # ============================================================================
+  # Lambda Functions - Spec Generator (Bedrock-powered, IAM auth for agent + JWT for portal chat)
+  # ============================================================================
+
+  SpecGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/spec-generator.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-spec-generator
+      Handler: packages/backend/src/handlers/spec-generator.handler
+      CodeUri: .
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: amazon.nova-lite-v1:0
+          BEDROCK_REGION: us-east-1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+      Events:
+        ImproveText:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /improve-text
+            Method: POST
+
+  # ============================================================================
+  # Lambda Functions - Agent Routes (IAM SigV4 auth)
+  # ============================================================================
+
+  JobWorkerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/job-worker.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-job-worker
+      Handler: packages/backend/src/handlers/job-worker.handler
+      CodeUri: .
+      Timeout: 60
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt JobQueue.QueueName
+        - S3CrudPolicy:
+            BucketName: !Ref ArtifactsBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:remote-kiro/${StageName}/*
+      Events:
+        GetJobCredential:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/credential
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        ClaimJob:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/claim
+            Method: POST
+            Auth:
+              Authorizer: NONE
+              # IAM SigV4 auth handled at IAM policy level
+        UpdateJobStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/status
+            Method: PATCH
+            Auth:
+              Authorizer: NONE
+        PostJobEvents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/events
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        PresignArtifact:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/artifacts/presign
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        CompleteJob:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/complete
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        FailJob:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/fail
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        PatchSpecWorker:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/spec
+            Method: PATCH
+            Auth:
+              Authorizer: NONE
+        GetSpecWorker:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /worker/jobs/{jobId}/spec
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        StoreReviewData:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{jobId}/review-data
+            Method: PATCH
+            Auth:
+              Authorizer: NONE
+        GetAIAgentWorker:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /worker/ai-agents/{aiAgentId}
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  AgentFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/agent.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-agent
+      Handler: packages/backend/src/handlers/agent.handler
+      CodeUri: .
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+      Events:
+        ListAgents:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /agents
+            Method: GET
+        RegisterAgent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /agents/register
+            Method: POST
+            Auth:
+              Authorizer: NONE
+        Heartbeat:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /agents/{agentId}/heartbeat
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+  # ============================================================================
+  # Lambda Functions - Webhook (signature-validated, no JWT/IAM)
+  # ============================================================================
+
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/webhook.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-webhook
+      Handler: packages/backend/src/handlers/webhook.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          GITHUB_WEBHOOK_SECRET: !Ref GitHubWebhookSecret
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt JobQueue.QueueName
+      Events:
+        GitHubWebhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /webhooks/github
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+  # ============================================================================
+  # Lambda Function - Timeout Checker (EventBridge scheduled)
+  # ============================================================================
+
+  TimeoutCheckerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Format: esm
+        OutExtension:
+          - .js=.mjs
+        EntryPoints:
+          - packages/backend/src/handlers/timeout.ts
+        External:
+          - '@aws-sdk/*'
+        Banner:
+          - js=import{createRequire}from'module';const require=createRequire(import.meta.url);
+    Properties:
+      FunctionName: !Sub ${StageName}-remote-kiro-timeout-checker
+      Handler: packages/backend/src/handlers/timeout.handler
+      CodeUri: .
+      Timeout: 120
+      Environment:
+        Variables:
+          FEATURE_JOB_TIMEOUT_MINUTES: !Ref FeatureJobTimeoutMinutes
+          REVIEW_JOB_TIMEOUT_MINUTES: !Ref ReviewJobTimeoutMinutes
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SingleTable
+      Events:
+        ScheduleRule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Check for timed-out jobs every 5 minutes
+            Enabled: true
+
+  # ============================================================================
+  # IAM Role for Local Agent (SQS + API Gateway access)
+  # ============================================================================
+
+  AgentIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${StageName}-remote-kiro-agent-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AgentSQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                Resource: !GetAtt JobQueue.Arn
+        - PolicyName: AgentAPIAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: execute-api:Invoke
+                Resource: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/${StageName}/*/*
+        - PolicyName: AgentS3BundleAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub ${ArtifactsBucket.Arn}/bundles/*
+
+  # ============================================================================
+  # CloudWatch Log Groups
+  # ============================================================================
+
+  RepositoryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${RepositoryFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  ProfileLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ProfileFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  JobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${JobFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  JobWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${JobWorkerFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  SpecGeneratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${SpecGeneratorFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  AgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AgentFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  WebhookLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${WebhookFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  TimeoutCheckerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${TimeoutCheckerFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ============================================================================
+  # CloudWatch Metric Filters - Job counts and durations
+  # ============================================================================
+
+  JobCreatedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref JobLogGroup
+      FilterPattern: '{ $.message = "Job created*" }'
+      MetricTransformations:
+        - MetricNamespace: RemoteKiro
+          MetricName: JobCreatedCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  JobCompletedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref JobWorkerLogGroup
+      FilterPattern: '{ $.message = "Job completed*" }'
+      MetricTransformations:
+        - MetricNamespace: RemoteKiro
+          MetricName: JobCompletedCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  JobFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref JobWorkerLogGroup
+      FilterPattern: '{ $.message = "Job failed*" }'
+      MetricTransformations:
+        - MetricNamespace: RemoteKiro
+          MetricName: JobFailedCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  JobTimedOutMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref TimeoutCheckerLogGroup
+      FilterPattern: '{ $.message = "Timed out job*" }'
+      MetricTransformations:
+        - MetricNamespace: RemoteKiro
+          MetricName: JobTimedOutCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # DLQ alarm for operator notification
+  DLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${StageName}-remote-kiro-dlq-messages
+      AlarmDescription: Messages in the Dead Letter Queue indicate failed job processing
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt JobDLQ.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+# ------------------------------------------------------------------------------
+# Outputs
+# ------------------------------------------------------------------------------
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+
+  PortalUrl:
+    Description: CloudFront distribution URL for the Portal SPA
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref CognitoUserPoolClient
+
+  CognitoDomain:
+    Description: Cognito hosted UI domain
+    Value: !Sub ${StageName}-remote-kiro-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
+
+  JobQueueUrl:
+    Description: SQS Job Queue URL
+    Value: !Ref JobQueue
+
+  JobQueueArn:
+    Description: SQS Job Queue ARN
+    Value: !GetAtt JobQueue.Arn
+
+  DLQUrl:
+    Description: SQS Dead Letter Queue URL
+    Value: !Ref JobDLQ
+
+  ArtifactsBucketName:
+    Description: S3 bucket for artifacts and bundles
+    Value: !Ref ArtifactsBucket
+
+  SPABucketName:
+    Description: S3 bucket for Portal SPA static files
+    Value: !Ref SPABucket
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID for cache invalidation
+    Value: !Ref CloudFrontDistribution
+
+  AgentRoleArn:
+    Description: IAM role ARN for the Local Agent
+    Value: !GetAtt AgentIAMRole.Arn

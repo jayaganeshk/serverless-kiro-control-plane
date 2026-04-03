@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "jsx": "preserve",
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../common" }
+  ]
+}

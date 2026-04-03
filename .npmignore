@@ -1,0 +1,17 @@
+node_modules/
+.aws-sam/
+*.tsbuildinfo
+sam-output.json
+agent-config.json
+agent-deploy.zip
+.agent-stage/
+packages/portal/
+packages/agent/
+*.test.js
+*.test.d.ts
+*.test.ts
+*.map
+src/
+.git/
+.kiro/
+.vscode/
