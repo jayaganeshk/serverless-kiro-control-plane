@@ -45,13 +45,13 @@ The agent uses IAM SigV4 to authenticate with the backend API. You need credenti
 
 **Agent IAM Role ARN:**
 ```
-arn:aws:iam::183103430916:role/dev-remote-kiro-agent-role
+arn:aws:iam::<account-id>:role/<stack-name>-agent-role
 ```
 
 Option A — Use SSO (recommended):
 ```bash
 aws configure sso
-# Region: ap-south-1
+# Region: <your-region>
 # Then assume the agent role or use your admin role
 ```
 
@@ -111,8 +111,8 @@ Create `agent-config.json` in the project root (or anywhere — you'll pass the 
   "pollingIntervalMs": 10000,
   "maxConcurrentJobs": 1,
   "bundleCacheDir": "/home/user/agent-workspace/.bundle-cache",
-  "backendApiUrl": "https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/dev",
-  "sqsQueueUrl": "https://sqs.ap-south-1.amazonaws.com/183103430916/dev-remote-kiro-job-queue",
+  "backendApiUrl": "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>",
+  "sqsQueueUrl": "https://sqs.<region>.amazonaws.com/<account-id>/<stack-name>-job-queue",
   "logDir": "/home/user/agent-workspace/.logs"
 }
 ```
@@ -146,8 +146,8 @@ mkdir -p /home/user/agent-workspace/.logs
 The agent also needs these env vars for the bundle cache (S3 access):
 
 ```bash
-export BUNDLES_BUCKET=dev-remote-kiro-artifacts-183103430916
-export AWS_REGION=ap-south-1
+export BUNDLES_BUCKET=<stack-name>-artifacts-<account-id>
+export AWS_REGION=<your-region>
 ```
 
 ### 7. Configure Git (for PR creation)
@@ -259,12 +259,12 @@ The agent handles timeouts (30 min for features, 15 min for reviews) and crashes
 
 | Resource | Value |
 |----------|-------|
-| API Gateway URL | `https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/dev` |
-| SQS Job Queue | `https://sqs.ap-south-1.amazonaws.com/183103430916/dev-remote-kiro-job-queue` |
-| S3 Artifacts Bucket | `dev-remote-kiro-artifacts-183103430916` |
-| Agent IAM Role | `arn:aws:iam::183103430916:role/dev-remote-kiro-agent-role` |
-| Cognito User Pool | `ap-south-1_kNNhYJntZ` |
-| Region | `ap-south-1` |
+| API Gateway URL | `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>` |
+| SQS Job Queue | `https://sqs.<region>.amazonaws.com/<account-id>/<stack-name>-job-queue` |
+| S3 Artifacts Bucket | `<stack-name>-artifacts-<account-id>` |
+| Agent IAM Role | `arn:aws:iam::<account-id>:role/<stack-name>-agent-role` |
+| Cognito User Pool | `<region>_<pool-id>` |
+| Region | `<your-region>` |
 | Stack Name | `remote-kiro-assistant` |
 
 ---
@@ -317,8 +317,8 @@ WorkingDirectory=/opt/remote-kiro-agent
 ExecStart=/usr/bin/node packages/agent/dist/index.js agent-config.json
 Restart=always
 RestartSec=10
-Environment=AWS_REGION=ap-south-1
-Environment=BUNDLES_BUCKET=dev-remote-kiro-artifacts-183103430916
+Environment=AWS_REGION=<your-region>
+Environment=BUNDLES_BUCKET=<stack-name>-artifacts-<account-id>
 
 [Install]
 WantedBy=multi-user.target

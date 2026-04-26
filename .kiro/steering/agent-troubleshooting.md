@@ -23,13 +23,13 @@ a) **Verify the API URL is correct:**
 cat agent-config.json | grep backendApiUrl
 
 # Should match the SAM output ApiUrl (from sam-output.json)
-# Example: https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/dev
+# Example: https://<api-id>.execute-api.<region>.amazonaws.com/<stage>
 ```
 
 b) **Test the API endpoint directly:**
 ```bash
 # Replace with your actual API URL
-curl -X POST https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/dev/agents/register \
+curl -X POST https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/agents/register \
   -H "Content-Type: application/json" \
   -d '{"machineId":"test","machineLabel":"test","capabilities":["implement_feature"],"repoAllowlist":[],"workspaceRoot":"/tmp","maxConcurrentJobs":1}'
 ```
@@ -49,7 +49,7 @@ d) **Check the API Gateway stage:**
 The URL should end with `/dev` (the stage name). If your stage is different, update `agent-config.json`:
 ```json
 {
-  "backendApiUrl": "https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/YOUR_STAGE"
+  "backendApiUrl": "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>"
 }
 ```
 
@@ -161,7 +161,7 @@ aws sts get-caller-identity
 a) **Check SQS queue:**
 ```bash
 aws sqs get-queue-attributes \
-  --queue-url https://sqs.ap-south-1.amazonaws.com/183103430916/dev-remote-kiro-job-queue \
+  --queue-url https://sqs.<region>.amazonaws.com/<account-id>/<stack-name>-job-queue \
   --attribute-names ApproximateNumberOfMessages \
   --region ap-south-1
 ```

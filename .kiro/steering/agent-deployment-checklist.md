@@ -9,7 +9,7 @@ Before deploying the agent, verify these prerequisites:
 ## 1. Backend Deployment
 
 - [ ] SAM stack is deployed: `aws cloudformation describe-stacks --stack-name remote-kiro-assistant --region ap-south-1`
-- [ ] API Gateway is accessible: `curl https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/dev/agents/register` (should return 400 or 401, not 404)
+- [ ] API Gateway is accessible: `curl https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/agents/register` (should return 400 or 401, not 404)
 - [ ] Lambda functions are deployed: `aws lambda list-functions --region ap-south-1 | grep remote-kiro`
 
 ## 2. Agent Machine Setup

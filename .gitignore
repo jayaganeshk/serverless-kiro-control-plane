@@ -10,3 +10,6 @@ agent-deploy.zip
 packaged.yaml
 packages/portal/.env
 packages/backend/.env
+BLOG.md
+samconfig.toml
+packages/portal/.env.production

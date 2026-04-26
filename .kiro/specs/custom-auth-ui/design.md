@@ -257,7 +257,7 @@ onMounted(async () => {
 ```json
 {
   "AuthFlow": "USER_PASSWORD_AUTH",
-  "ClientId": "5ttoj676v437r8l6n2haeus884",
+  "ClientId": "<your-cognito-client-id>",
   "AuthParameters": {
     "USERNAME": "user@example.com",
     "PASSWORD": "secret"
@@ -296,7 +296,7 @@ onMounted(async () => {
 ```json
 {
   "ChallengeName": "NEW_PASSWORD_REQUIRED",
-  "ClientId": "5ttoj676v437r8l6n2haeus884",
+  "ClientId": "<your-cognito-client-id>",
   "Session": "AYA...",
   "ChallengeResponses": {
     "USERNAME": "user@example.com",
@@ -310,7 +310,7 @@ onMounted(async () => {
 ```json
 {
   "AuthFlow": "REFRESH_TOKEN_AUTH",
-  "ClientId": "5ttoj676v437r8l6n2haeus884",
+  "ClientId": "<your-cognito-client-id>",
   "AuthParameters": {
     "REFRESH_TOKEN": "eyJ..."
   }

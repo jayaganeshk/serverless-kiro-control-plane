@@ -1,0 +1,15 @@
+version = 0.1
+
+[dev.deploy.parameters]
+stack_name = "remote-kiro-assistant"
+resolve_s3 = false
+s3_bucket = "<stack-name>-artifacts-<account-id>"
+s3_prefix = "remote-kiro-assistant"
+region = "<your-region>"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+parameter_overrides = "StageName=\"dev\" LogRetentionDays=\"30\" FeatureJobTimeoutMinutes=\"60\" GitHubWebhookSecret=\"<your-webhook-secret>\" ReviewJobTimeoutMinutes=\"15\""
+image_repositories = []
+
+[dev.global.parameters]
+region = "<your-region>"

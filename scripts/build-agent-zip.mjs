@@ -53,8 +53,8 @@ const configTemplate = {
   pollingIntervalMs: 10000,
   maxConcurrentJobs: 1,
   bundleCacheDir: "./bundle-cache",
-  backendApiUrl: "https://qkcm9eti1b.execute-api.ap-south-1.amazonaws.com/dev",
-  sqsQueueUrl: "https://sqs.ap-south-1.amazonaws.com/183103430916/dev-remote-kiro-job-queue",
+  backendApiUrl: "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>",
+  sqsQueueUrl: "https://sqs.<region>.amazonaws.com/<account-id>/<stack-name>-job-queue",
   logDir: "./logs"
 };
 archive.append(JSON.stringify(configTemplate, null, 2), { name: 'agent-config.template.json' });

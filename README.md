@@ -4,50 +4,7 @@ A serverless control-plane that dispatches AI coding tasks to local agents, mana
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              AWS Cloud                                      │
-│                                                                             │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────────┐    │
-│  │  CloudFront   │     │  API Gateway  │     │     Cognito User Pool    │    │
-│  │  (Portal CDN) │     │  (HTTP API)   │     │  (Auth + JWT Tokens)     │    │
-│  └──────┬───────┘     └──────┬───────┘     └──────────────────────────┘    │
-│         │                    │                                              │
-│         ▼                    ▼                                              │
-│  ┌──────────────┐     ┌──────────────────────────────────────────┐         │
-│  │   S3 Bucket   │     │            Lambda Functions              │         │
-│  │  (Portal SPA) │     │                                          │         │
-│  └──────────────┘     │  ┌────────┐ ┌─────────┐ ┌───────────┐   │         │
-│                       │  │  Job   │ │  Repo   │ │  Profile  │   │         │
-│                       │  │Handler │ │ Handler │ │  Handler  │   │         │
-│  ┌──────────────┐     │  └───┬────┘ └────┬────┘ └─────┬─────┘   │         │
-│  │   S3 Bucket   │     │  ┌──┴────┐ ┌────┴────┐ ┌─────┴─────┐   │         │
-│  │  (Artifacts   │     │  │  AI   │ │ Webhook │ │  Timeout  │   │         │
-│  │   & Bundles)  │     │  │ Agent │ │ Handler │ │  Handler  │   │         │
-│  └──────────────┘     │  └───┬────┘ └────┬────┘ └─────┬─────┘   │         │
-│                       └──────┼──────────┼───────────┼──────────┘         │
-│                              │          │           │                      │
-│                              ▼          ▼           ▼                      │
-│                       ┌──────────┐  ┌────────┐  ┌──────────┐              │
-│                       │ DynamoDB │  │  SQS   │  │EventBridge│              │
-│                       │ (Single  │  │ (Job   │  │(Scheduled │              │
-│                       │  Table)  │  │ Queue) │  │ Timeouts) │              │
-│                       └──────────┘  └───┬────┘  └──────────┘              │
-│                                         │                                  │
-└─────────────────────────────────────────┼──────────────────────────────────┘
-                                          │
-                                          ▼
-                               ┌─────────────────────┐
-                               │    Local Agent       │
-                               │  (User's Machine)    │
-                               │                      │
-                               │  SQS Poller          │
-                               │    → Pipeline Runner │
-                               │      → Kiro ACP      │
-                               │      → Git Operations│
-                               │      → API Reporter  │
-                               └─────────────────────┘
-```
+![Architecture Diagram](screenshots/architecture-diagram.png)
 
 ### Three-Tier Architecture
 
@@ -142,6 +99,8 @@ Each phase supports approval, rejection with reason, and feedback-driven revisio
 - SAM (Serverless Application Model) for infrastructure-as-code
 
 ## Job States
+
+![Job Lifecycle Flow](screenshots/job-lifecycle-diagram.png)
 
 ```
 QUEUED → CLAIMED → RUNNING ─┬→ AWAITING_APPROVAL → RUNNING (resumed)
