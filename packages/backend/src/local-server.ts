@@ -121,6 +121,7 @@ const routes: Route[] = [
   { method: "POST",  pattern: /^\/jobs\/([^/]+)\/fail$/,       paramNames: ["jobId"],  handler: jobWorkerHandler },
 
   // Agent routes
+  { method: "GET",   pattern: /^\/agents$/,                     paramNames: [],           handler: agentHandler },
   { method: "POST",  pattern: /^\/agents\/register$/,          paramNames: [],           handler: agentHandler },
   { method: "POST",  pattern: /^\/agents\/([^/]+)\/heartbeat$/, paramNames: ["agentId"], handler: agentHandler },
 
